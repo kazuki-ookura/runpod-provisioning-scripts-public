@@ -17,6 +17,7 @@ PIP_PACKAGES=(
     "insightface"
     "onnxruntime-gpu"
     "opencv-python-headless"
+    "huggingface_hub"
 )
 
 # ========================
@@ -39,6 +40,17 @@ function pip_install() {
         "$COMFYUI_VENV_PIP" install --no-cache-dir "$@"
     else
         micromamba run -n comfyui pip install --no-cache-dir "$@"
+    fi
+}
+
+function venv_python() {
+    # Get the Python interpreter for the comfyui venv
+    if [[ -n $COMFYUI_VENV_PIP ]]; then
+        echo "$(dirname "$COMFYUI_VENV_PIP")/python3"
+    elif [[ -n $MAMBA_BASE ]]; then
+        echo "micromamba run -n comfyui python3"
+    else
+        echo "python3"
     fi
 }
 
@@ -122,14 +134,32 @@ function provisioning_get_models() {
     local ANTELOPE_DIR="$COM_DIR/models/insightface/models/antelopev2"
     if [[ ! -f "$ANTELOPE_DIR/scrfd_10g_bnkps.onnx" ]]; then
         printf "Downloading antelopev2 (InsightFace)...\n"
-        micromamba run -n comfyui python3 -c "
+        mkdir -p "$ANTELOPE_DIR"
+
+        # Determine which python to use
+        local PYTHON
+        if [[ -n "$COMFYUI_VENV_PIP" ]]; then
+            PYTHON="$(dirname "$COMFYUI_VENV_PIP")/python3"
+        elif command -v micromamba &>/dev/null; then
+            PYTHON="micromamba run -n comfyui python3"
+        else
+            PYTHON="python3"
+        fi
+
+        $PYTHON -c "
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id='DIAMONIK7777/antelopev2',
-    local_dir='$ANTELOPE_DIR'
+    local_dir='${ANTELOPE_DIR}'
 )
 print('antelopev2 download complete')
 "
+        # Verify download
+        if [[ -f "$ANTELOPE_DIR/scrfd_10g_bnkps.onnx" ]]; then
+            printf "antelopev2: OK\n"
+        else
+            printf "ERROR: antelopev2 download failed!\n"
+        fi
     fi
 }
 
