@@ -1,96 +1,131 @@
 #!/bin/bash
-# RunPod Provisioning Script for AI Girl Pipeline
+# AI Girl Pipeline - Provisioning Script for ai-dock/comfyui
+# Based on the official ai-dock provisioning format:
+# https://github.com/ai-dock/comfyui/blob/main/config/provisioning/default.sh
 
-set -e
+# ai-dock カスタムノードリスト（NODES 配列）
+NODES=(
+    "https://github.com/ltdrdata/ComfyUI-Manager"
+    "https://github.com/cubiq/ComfyUI_IPAdapter_plus"
+    "https://github.com/Gourieff/comfyui-reactor-node"
+    "https://github.com/pythongosssss/ComfyUI-Custom-Scripts"
+)
 
-# --- ComfyUI のインストールパスを自動判定 ---
-if [ -d "/opt/ComfyUI" ]; then
-    export COM_DIR=/opt/ComfyUI
-elif [ -d "/workspace/ComfyUI" ]; then
-    export COM_DIR=/workspace/ComfyUI
-else
-    echo "ERROR: ComfyUI directory not found!"
-    exit 1
-fi
-echo "=== ComfyUI detected at: $COM_DIR ==="
+# 追加でインストールする Python パッケージ
+PIP_PACKAGES=(
+    "insightface"
+    "onnxruntime-gpu>=1.16.0"
+    "opencv-python-headless"
+)
 
-# --- Python 実行ファイルを自動判定 ---
-if [ -f "/opt/venv/bin/python3" ]; then
-    PYTHON=/opt/venv/bin/python3
-elif [ -f "/opt/ComfyUI/venv/bin/python3" ]; then
-    PYTHON=/opt/ComfyUI/venv/bin/python3
-else
-    PYTHON=$(which python3)
-fi
-echo "=== Python: $PYTHON ==="
+# ========================
+# DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING
+# ========================
 
-mkdir -p $COM_DIR/custom_nodes
-cd $COM_DIR/custom_nodes
+function provisioning_start() {
+    source /opt/ai-dock/etc/environment.sh
+    source /opt/ai-dock/bin/venv-set.sh comfyui
 
-echo "=== [1/5] Installing system packages ==="
-apt-get update && apt-get install -y aria2 unzip build-essential cmake python3-dev git --no-install-recommends
+    provisioning_print_header
+    provisioning_get_nodes
+    provisioning_get_pip_packages
+    provisioning_get_additional_models
+    provisioning_print_end
+}
 
-echo "=== [2/5] Installing/Updating custom nodes ==="
-for repo in \
-    "https://github.com/ltdrdata/ComfyUI-Manager" \
-    "https://github.com/cubiq/ComfyUI_IPAdapter_plus" \
-    "https://github.com/Gourieff/comfyui-reactor-node" \
-    "https://github.com/pythongosssss/ComfyUI-Custom-Scripts"; do
-    dir=$(basename "$repo")
-    if [ -d "$dir" ]; then
-        echo "  -> Updating $dir"
-        git -C "$dir" pull --ff-only || true
+function pip_install() {
+    if [[ -z $MAMBA_BASE ]]; then
+        "$COMFYUI_VENV_PIP" install --no-cache-dir "$@"
     else
-        echo "  -> Cloning $dir"
-        git clone --depth 1 "$repo.git" "$dir"
+        micromamba run -n comfyui pip install --no-cache-dir "$@"
     fi
-done
+}
 
-echo "=== [3/5] Installing Python dependencies (always, even if already done) ==="
-# ボリューム再利用でも確実にインストールされるよう pip install --upgrade を使用
-$PYTHON -m pip install --no-cache-dir --upgrade \
-    insightface \
-    "onnxruntime-gpu>=1.16.0" \
-    opencv-python-headless
-
-for dir in ComfyUI_IPAdapter_plus comfyui-reactor-node; do
-    if [ -d "$dir" ] && [ -f "$dir/requirements.txt" ]; then
-        echo "  -> pip install -r $dir/requirements.txt"
-        $PYTHON -m pip install --no-cache-dir -r "$dir/requirements.txt" || true
+function provisioning_get_pip_packages() {
+    if [[ ${#PIP_PACKAGES[@]} -gt 0 ]]; then
+        pip_install "${PIP_PACKAGES[@]}"
     fi
-done
+}
 
-echo "=== [4/5] Downloading models ==="
-mkdir -p $COM_DIR/models/checkpoints $COM_DIR/models/loras $COM_DIR/models/ipadapter $COM_DIR/models/clip_vision
+function provisioning_get_nodes() {
+    for repo in "${NODES[@]}"; do
+        dir="${repo##*/}"
+        path="/opt/ComfyUI/custom_nodes/${dir}"
+        requirements="${path}/requirements.txt"
+        if [[ -d $path ]]; then
+            printf "Updating node: %s...\n" "${repo}"
+            ( cd "$path" && git pull )
+            if [[ -e $requirements ]]; then
+                pip_install -r "$requirements"
+            fi
+        else
+            printf "Downloading node: %s...\n" "${repo}"
+            git clone "${repo}" "${path}" --recursive
+            if [[ -e $requirements ]]; then
+                pip_install -r "${requirements}"
+            fi
+        fi
+    done
+}
 
-[ ! -f "$COM_DIR/models/checkpoints/cyberrealisticPony_v15.safetensors" ] && \
-    aria2c -x 16 -s 16 -k 1M -o cyberrealisticPony_v15.safetensors -d "$COM_DIR/models/checkpoints" \
-    "https://huggingface.co/cyberdelia/CyberRealisticPony/resolve/main/CyberRealisticPony_V15.0_FP16.safetensors"
+function provisioning_get_additional_models() {
+    local COM_DIR=/opt/ComfyUI
+    mkdir -p \
+        "$COM_DIR/models/checkpoints" \
+        "$COM_DIR/models/loras" \
+        "$COM_DIR/models/ipadapter" \
+        "$COM_DIR/models/clip_vision"
 
-[ ! -f "$COM_DIR/models/loras/ip-adapter-faceid-plusv2_sdxl_lora.safetensors" ] && \
-    aria2c -x 16 -s 16 -k 1M -o ip-adapter-faceid-plusv2_sdxl_lora.safetensors -d "$COM_DIR/models/loras" \
-    "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl_lora.safetensors"
+    # Checkpoint
+    local CKPT="$COM_DIR/models/checkpoints/cyberrealisticPony_v15.safetensors"
+    if [[ ! -f "$CKPT" ]]; then
+        printf "Downloading cyberrealisticPony_v15...\n"
+        aria2c -x 16 -s 16 -k 1M -o "$(basename $CKPT)" -d "$(dirname $CKPT)" \
+            "https://huggingface.co/cyberdelia/CyberRealisticPony/resolve/main/CyberRealisticPony_V15.0_FP16.safetensors"
+    fi
 
-[ ! -f "$COM_DIR/models/ipadapter/ip-adapter-faceid-plusv2_sdxl.bin" ] && \
-    aria2c -x 16 -s 16 -k 1M -o ip-adapter-faceid-plusv2_sdxl.bin -d "$COM_DIR/models/ipadapter" \
-    "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl.bin"
+    # LoRA for IPAdapter FaceID
+    local LORA="$COM_DIR/models/loras/ip-adapter-faceid-plusv2_sdxl_lora.safetensors"
+    if [[ ! -f "$LORA" ]]; then
+        printf "Downloading IPAdapter LoRA...\n"
+        aria2c -x 16 -s 16 -k 1M -o "$(basename $LORA)" -d "$(dirname $LORA)" \
+            "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl_lora.safetensors"
+    fi
 
-[ ! -f "$COM_DIR/models/clip_vision/clip_vision_g.safetensors" ] && \
-    aria2c -x 16 -s 16 -k 1M -o clip_vision_g.safetensors -d "$COM_DIR/models/clip_vision" \
-    "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
+    # IPAdapter model
+    local IPA="$COM_DIR/models/ipadapter/ip-adapter-faceid-plusv2_sdxl.bin"
+    if [[ ! -f "$IPA" ]]; then
+        printf "Downloading IPAdapter model...\n"
+        aria2c -x 16 -s 16 -k 1M -o "$(basename $IPA)" -d "$(dirname $IPA)" \
+            "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl.bin"
+    fi
 
-# InsightFace antelopev2 モデル
-INSIGHT_DIR=/root/.insightface/models/antelopev2
-if [ ! -d "$INSIGHT_DIR" ]; then
-    mkdir -p /root/.insightface/models
-    aria2c -x 16 -s 16 -k 1M -d /tmp -o antelopev2.zip \
-        "https://huggingface.co/DIAMONIK7777/antelopev2/resolve/main/antelopev2.zip"
-    unzip -o /tmp/antelopev2.zip -d /root/.insightface/models/
-    rm /tmp/antelopev2.zip
-fi
+    # CLIP Vision
+    local CLIP="$COM_DIR/models/clip_vision/clip_vision_g.safetensors"
+    if [[ ! -f "$CLIP" ]]; then
+        printf "Downloading CLIP Vision...\n"
+        aria2c -x 16 -s 16 -k 1M -o "$(basename $CLIP)" -d "$(dirname $CLIP)" \
+            "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
+    fi
 
-echo "=== [5/5] Restarting ComfyUI to load updated nodes ==="
-supervisorctl restart comfyui 2>/dev/null || \
-    pkill -f "main.py" 2>/dev/null || true
+    # InsightFace antelopev2 (IPAdapter FaceID に必須)
+    if [[ ! -d "/root/.insightface/models/antelopev2" ]]; then
+        mkdir -p /root/.insightface/models
+        aria2c -x 16 -s 16 -k 1M -d /tmp -o antelopev2.zip \
+            "https://huggingface.co/DIAMONIK7777/antelopev2/resolve/main/antelopev2.zip"
+        unzip -o /tmp/antelopev2.zip -d /root/.insightface/models/
+        rm /tmp/antelopev2.zip
+    fi
+}
 
-echo "=== Provisioning complete! ==="
+function provisioning_print_header() {
+    printf "\n############################################\n"
+    printf "#     AI Girl Pipeline Provisioning        #\n"
+    printf "############################################\n\n"
+}
+
+function provisioning_print_end() {
+    printf "\nProvisioning complete: ComfyUI will start now\n\n"
+}
+
+provisioning_start
