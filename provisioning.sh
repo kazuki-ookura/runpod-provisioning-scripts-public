@@ -12,7 +12,6 @@ else
     echo "ERROR: ComfyUI directory not found!"
     exit 1
 fi
-
 echo "=== ComfyUI detected at: $COM_DIR ==="
 
 # --- Python 実行ファイルを自動判定 ---
@@ -31,14 +30,25 @@ cd $COM_DIR/custom_nodes
 echo "=== [1/5] Installing system packages ==="
 apt-get update && apt-get install -y aria2 unzip build-essential cmake python3-dev git --no-install-recommends
 
-echo "=== [2/5] Cloning custom nodes ==="
-[ ! -d ComfyUI-Manager ] && git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git
-[ ! -d ComfyUI_IPAdapter_plus ] && git clone --depth 1 https://github.com/cubiq/ComfyUI_IPAdapter_plus.git
-[ ! -d comfyui-reactor-node ] && git clone --depth 1 https://github.com/Gourieff/comfyui-reactor-node.git
-[ ! -d ComfyUI-Custom-Scripts ] && git clone --depth 1 https://github.com/pythongosssss/ComfyUI-Custom-Scripts.git
+echo "=== [2/5] Installing/Updating custom nodes ==="
+for repo in \
+    "https://github.com/ltdrdata/ComfyUI-Manager" \
+    "https://github.com/cubiq/ComfyUI_IPAdapter_plus" \
+    "https://github.com/Gourieff/comfyui-reactor-node" \
+    "https://github.com/pythongosssss/ComfyUI-Custom-Scripts"; do
+    dir=$(basename "$repo")
+    if [ -d "$dir" ]; then
+        echo "  -> Updating $dir"
+        git -C "$dir" pull --ff-only || true
+    else
+        echo "  -> Cloning $dir"
+        git clone --depth 1 "$repo.git" "$dir"
+    fi
+done
 
-echo "=== [3/5] Installing Python dependencies ==="
-$PYTHON -m pip install --no-cache-dir \
+echo "=== [3/5] Installing Python dependencies (always, even if already done) ==="
+# ボリューム再利用でも確実にインストールされるよう pip install --upgrade を使用
+$PYTHON -m pip install --no-cache-dir --upgrade \
     insightface \
     "onnxruntime-gpu>=1.16.0" \
     opencv-python-headless
@@ -79,10 +89,8 @@ if [ ! -d "$INSIGHT_DIR" ]; then
     rm /tmp/antelopev2.zip
 fi
 
-echo "=== [5/5] Restarting ComfyUI to load new nodes ==="
-# プロビジョニング完了後にComfyUIを再起動してノードをロードさせる
+echo "=== [5/5] Restarting ComfyUI to load updated nodes ==="
 supervisorctl restart comfyui 2>/dev/null || \
-    pkill -f "main.py" 2>/dev/null || \
-    echo "NOTE: Could not restart ComfyUI automatically. It may restart on its own."
+    pkill -f "main.py" 2>/dev/null || true
 
 echo "=== Provisioning complete! ==="
